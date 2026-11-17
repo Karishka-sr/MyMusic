@@ -199,7 +199,10 @@ private fun LibraryScreen(state: PlayerUiState, vm: PlayerViewModel) {
                         TrackRow(
                             track = track,
                             isCurrent = track.id.toString() == state.currentMediaId,
-                            onClick = { vm.play(track, visible) },
+                            onClick = {
+                                vm.play(track, visible)
+                                showFull = true // сразу открываем окно плеера
+                            },
                         )
                     }
                 }
@@ -360,29 +363,40 @@ private fun FullPlayerSheet(state: PlayerUiState, vm: PlayerViewModel, onDismiss
                 .navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Artwork(
-                uri = track.artUri,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f),
-                shape = RoundedCornerShape(28.dp),
-            )
+            // Сверху: обложка слева, справа название, а под ним автор
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Artwork(
+                    uri = track.artUri,
+                    modifier = Modifier.size(128.dp),
+                    shape = RoundedCornerShape(20.dp),
+                )
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .padding(start = 16.dp)
+                ) {
+                    Text(
+                        track.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        track.artist,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             Spacer(Modifier.height(24.dp))
-            Text(
-                track.title,
-                style = MaterialTheme.typography.headlineSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                track.artist,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(16.dp))
 
+            // Ниже: полоса, по которой идёт трек, а под ней кнопки
             SeekBar(state, vm)
 
             Spacer(Modifier.height(8.dp))

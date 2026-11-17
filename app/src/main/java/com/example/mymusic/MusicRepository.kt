@@ -13,6 +13,30 @@ class MusicRepository(private val context: Context) {
 
     private val albumArtBase: Uri = Uri.parse("content://media/external/audio/albumart")
 
+    /**
+     * Фрагменты пути, по которым файл считается НЕ музыкой: мессенджеры и диктофоны.
+     * Сравнение через SQL LIKE — без учёта регистра только для латиницы,
+     * поэтому русские названия папок записаны в двух вариантах.
+     * Чтобы вернуть что-то в список — просто удали строку.
+     */
+    private val excludedPathPatterns = listOf(
+        // Мессенджеры
+        "%Telegram%", "%org.telegram%",
+        "%WhatsApp%", "%com.whatsapp%",
+        "%Viber%",
+        "%vkontakte%", "%/VK/%",
+        "%/Signal/%",
+        "%com.facebook.orca%",
+        "%Skype%",
+        "%Discord%",
+        // Диктофоны и записи звонков
+        "%/Recordings/%", "%/Recorder/%", "%/Recording/%",
+        "%Voice Recorder%", "%VoiceRecorder%", "%Voice Notes%", "%Voice Memos%",
+        "%sound_recorder%", "%call_rec%", "%CallRecord%",
+        "%Диктофон%", "%диктофон%",
+        "%Запись%", "%запись%", "%Записи%", "%записи%",
+    )
+
     suspend fun loadTracks(): List<Track> = withContext(Dispatchers.IO) {
         val collection = if (Build.VERSION.SDK_INT >= 29) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -30,11 +54,21 @@ class MusicRepository(private val context: Context) {
         )
 
         // IS_MUSIC отсекает рингтоны, уведомления и т.п.
-        val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
+        // Дальше убираем голосовые из мессенджеров и записи диктофона: по папкам и по флагу «запись».
+        val data = MediaStore.Audio.Media.DATA
+        val notInExcludedFolders = excludedPathPatterns.joinToString(" AND ") { "$data NOT LIKE ?" }
+        val selection = buildString {
+            append("${MediaStore.Audio.Media.IS_MUSIC} != 0")
+            append(" AND ($data IS NULL OR ($notInExcludedFolders))")
+            if (Build.VERSION.SDK_INT >= 31) {
+                append(" AND COALESCE(${MediaStore.Audio.Media.IS_RECORDING}, 0) = 0")
+            }
+        }
+        val selectionArgs = excludedPathPatterns.toTypedArray()
         val sortOrder = "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC"
 
         val result = mutableListOf<Track>()
-        context.contentResolver.query(collection, projection, selection, null, sortOrder)?.use { cursor ->
+        context.contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
             val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
             val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
