@@ -1,6 +1,4 @@
-.gradle/
-build/
-local.properties
+target/
+Cargo.lock.bak
 .idea/
 *.iml
-.DS_Store

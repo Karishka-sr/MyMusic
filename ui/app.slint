@@ -1,0 +1,889 @@
+import { Button, ComboBox, LineEdit, ListView, Palette, ProgressIndicator, Switch } from "std-widgets.slint";
+
+export struct TrackItem {
+    key: string,
+    title: string,
+    artist: string,
+    duration: string,
+    letter: string,
+}
+
+global Util {
+    /// Секунды -> "м:сс"
+    public pure function time(s: float) -> string {
+        return "" + Math.floor(s / 60) + ":"
+            + (Math.floor(s) - Math.floor(s / 60) * 60 < 10 ? "0" : "")
+            + (Math.floor(s) - Math.floor(s / 60) * 60);
+    }
+}
+
+// ───────────────────────── Мелкие детали ─────────────────────────
+
+/// Круглая кнопка с иконкой.
+component IconBtn inherits Rectangle {
+    in property <image> icon;
+    in property <length> btn-size: 48px;
+    in property <length> icon-size: 24px;
+    in property <bool> filled: false;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: root.btn-size;
+    height: root.btn-size;
+    border-radius: root.btn-size / 2;
+    background: root.filled ? Palette.accent-background
+        : root.active ? Palette.accent-background.with-alpha(0.18)
+        : touch.pressed ? Palette.foreground.with-alpha(0.12)
+        : transparent;
+
+    Image {
+        source: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: root.filled ? Palette.accent-foreground
+            : root.active ? Palette.accent-background
+            : Palette.foreground;
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Обложка. Пока обложки нет — нотка.
+component Cover inherits Rectangle {
+    in property <image> art;
+    in property <bool> has-art: false;
+    in property <length> radius: 12px;
+
+    background: Palette.control-background;
+    border-radius: root.radius;
+    clip: true;
+
+    Image {
+        visible: !root.has-art;
+        source: @image-url("icons/music_note.svg");
+        colorize: Palette.control-foreground;
+        width: parent.width * 0.5;
+        height: parent.height * 0.5;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    Image {
+        visible: root.has-art;
+        source: root.art;
+        image-fit: cover;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+/// Полоса перемотки: тапни или потяни.
+component SeekBar inherits Rectangle {
+    in property <float> position;
+    in property <float> total;
+    out property <float> shown-position: root.dragging ? root.drag-ratio * root.total : root.position;
+    callback seek(float);
+
+    property <bool> dragging: false;
+    property <float> drag-ratio: 0;
+    property <float> ratio: root.dragging
+        ? root.drag-ratio
+        : (root.total > 0 ? Math.clamp(root.position / root.total, 0, 1) : 0);
+
+    height: 36px;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 6px;
+        border-radius: 3px;
+        background: Palette.foreground.with-alpha(0.15);
+        Rectangle {
+            width: parent.width * root.ratio;
+            height: parent.height;
+            border-radius: 3px;
+            background: Palette.accent-background;
+        }
+    }
+    Rectangle {
+        width: root.dragging ? 24px : 20px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Palette.accent-background;
+        x: root.ratio * (parent.width - self.width);
+        y: (parent.height - self.height) / 2;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.dragging = true;
+                root.drag-ratio = Math.clamp(self.mouse-x / self.width, 0, 1);
+            } else if (e.kind == PointerEventKind.up && root.dragging) {
+                root.dragging = false;
+                root.seek(root.drag-ratio * root.total);
+            } else if (e.kind == PointerEventKind.cancel) {
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if (root.dragging) {
+                root.drag-ratio = Math.clamp(self.mouse-x / self.width, 0, 1);
+            }
+        }
+    }
+}
+
+/// Ползунок быстрой прокрутки: взял справа и тянешь вверх/вниз — список листается,
+/// а рядом показывается буква, до которой долистал.
+component FastScroller inherits Rectangle {
+    in property <length> content-height;
+    in property <length> view-height;
+    in property <[TrackItem]> items;
+    in-out property <length> viewport-y;
+
+    property <length> range: Math.max(0px, root.content-height - root.view-height);
+    property <length> thumb-h: 64px;
+    property <length> travel: Math.max(1px, root.height - root.thumb-h);
+    property <float> ratio: root.range > 0px ? Math.clamp(-root.viewport-y / root.range, 0, 1) : 0;
+
+    width: 40px;
+    background: transparent;
+    // короткий список листать быстро незачем
+    visible: root.range > root.view-height;
+
+    function scroll-to(y: length) {
+        root.viewport-y = -Math.clamp((y - root.thumb-h / 2) / root.travel, 0, 1) * root.range;
+    }
+
+    thumb := Rectangle {
+        width: ta.pressed ? 12px : 8px;
+        height: root.thumb-h;
+        x: root.width - self.width - 4px;
+        y: root.ratio * root.travel;
+        border-radius: self.width / 2;
+        background: Palette.accent-background.with-alpha(ta.pressed ? 1.0 : 0.6);
+    }
+
+    if ta.pressed && root.items.length > 0 : Rectangle {
+        x: -68px;
+        y: Math.clamp(thumb.y + (root.thumb-h - self.height) / 2, 0px, root.height - self.height);
+        width: 56px;
+        height: 56px;
+        border-radius: 28px;
+        background: Palette.accent-background;
+        Text {
+            text: root.items[Math.round(root.ratio * (root.items.length - 1))].letter;
+            color: Palette.accent-foreground;
+            font-size: 26px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.scroll-to(self.mouse-y);
+            }
+        }
+        moved => {
+            root.scroll-to(self.mouse-y);
+        }
+    }
+}
+
+/// Строка настроек: слева название (и пояснение), справа элемент управления.
+component SettingRow inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+
+    height: root.hint == "" ? 60px : 78px;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 4px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                font-size: 16px;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+            if root.hint != "" : Text {
+                text: root.hint;
+                font-size: 12px;
+                color: Palette.foreground.with-alpha(0.65);
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// ───────────────────────── Главное окно ─────────────────────────
+
+export component MainWindow inherits Window {
+    title: "Моя музыка";
+    background: Palette.background;
+
+    // — данные от Rust —
+    in property <[TrackItem]> tracks;
+    in property <bool> permission-granted: false;
+    in property <bool> loading: false;
+    in property <int> total-count: 0;
+    in property <int> hidden-count: 0;
+    in property <string> message: "";
+
+    in property <bool> has-current: false;
+    in property <string> current-key;
+    in property <string> current-title;
+    in property <string> current-artist;
+    in property <image> current-cover;
+    in property <bool> has-cover: false;
+    in property <bool> playing: false;
+    in property <float> play-position: 0;
+    in property <float> track-length: 0;
+    in property <bool> shuffle: false;
+    in property <int> repeat-mode: 0;
+
+    // — настройки (меняются и в Rust, и на экране) —
+    in-out property <int> theme-mode: 0;
+    in-out property <bool> hide-messengers: true;
+    in-out property <bool> hide-recordings: true;
+    in-out property <int> min-length: 0;
+    in-out property <int> sort-mode: 0;
+    in-out property <bool> auto-open-player: true;
+
+    // — состояние экрана —
+    in-out property <bool> player-open: false;
+    in-out property <bool> settings-open: false;
+    in-out property <int> menu-index: -1;
+    in-out property <bool> confirm-delete: false;
+
+    callback request-permission();
+    callback play-track(int);
+    callback toggle-play();
+    callback next();
+    callback previous();
+    callback seek(float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback search-changed(string);
+    callback settings-changed();
+    callback rescan();
+    callback hide-track(int);
+    callback delete-track(int);
+    callback unhide-all();
+
+    // Отступы под строку состояния и жесты навигации. Если у тебя на телефоне
+    // что-то налезает на край — поменяй эти два числа.
+    property <length> top-inset: 28px;
+    property <length> bottom-inset: 16px;
+
+    changed theme-mode => {
+        Palette.color-scheme = root.theme-mode == 1 ? ColorScheme.light
+            : root.theme-mode == 2 ? ColorScheme.dark
+            : ColorScheme.unknown;
+    }
+
+    VerticalLayout {
+        Rectangle { height: root.top-inset; }
+
+        HorizontalLayout {
+            height: 56px;
+            padding-left: 20px;
+            padding-right: 8px;
+            spacing: 4px;
+            Text {
+                text: "Моя музыка";
+                font-size: 22px;
+                font-weight: 500;
+                color: Palette.foreground;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            IconBtn {
+                icon: @image-url("icons/refresh.svg");
+                clicked => { root.rescan(); }
+            }
+            IconBtn {
+                icon: @image-url("icons/settings.svg");
+                clicked => { root.settings-open = true; }
+            }
+        }
+
+        // — нет разрешения —
+        if !root.permission-granted : Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 16px;
+                padding: 32px;
+                Image {
+                    source: @image-url("icons/music_note.svg");
+                    colorize: Palette.accent-background;
+                    height: 72px;
+                }
+                Text {
+                    text: "Чтобы показать твои треки, приложению нужен доступ к музыке на телефоне.";
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    font-size: 16px;
+                    color: Palette.foreground;
+                }
+                Button {
+                    text: "Разрешить доступ";
+                    primary: true;
+                    clicked => { root.request-permission(); }
+                }
+            }
+        }
+
+        // — библиотека —
+        if root.permission-granted : VerticalLayout {
+            vertical-stretch: 1;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-bottom: 8px;
+                LineEdit {
+                    placeholder-text: "Поиск по трекам";
+                    edited(text) => { root.search-changed(text); }
+                }
+            }
+
+            if root.loading && root.tracks.length == 0 : Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    padding: 32px;
+                    Text {
+                        text: "Ищу музыку…";
+                        horizontal-alignment: center;
+                        color: Palette.foreground;
+                    }
+                    ProgressIndicator { indeterminate: true; }
+                }
+            }
+
+            if !root.loading && root.tracks.length == 0 : Rectangle {
+                vertical-stretch: 1;
+                Text {
+                    x: 32px;
+                    width: parent.width - 64px;
+                    height: parent.height;
+                    text: root.total-count == 0 ? "Музыка на телефоне не найдена" : "Ничего не найдено";
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+            }
+
+            if root.tracks.length > 0 : Rectangle {
+                vertical-stretch: 1;
+
+                list := ListView {
+                    width: parent.width;
+                    height: parent.height;
+                    vertical-scrollbar-policy: always-off;
+
+                    for t[i] in root.tracks : Rectangle {
+                        height: 64px;
+                        background: row-touch.pressed ? Palette.foreground.with-alpha(0.08) : transparent;
+
+                        row-touch := TouchArea {
+                            clicked => { root.play-track(i); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 40px;
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            spacing: 10px;
+
+                            Cover {
+                                width: 48px;
+                                height: 48px;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: t.title;
+                                    font-size: 16px;
+                                    overflow: elide;
+                                    color: t.key == root.current-key ? Palette.accent-background : Palette.foreground;
+                                }
+                                Text {
+                                    text: t.artist;
+                                    font-size: 13px;
+                                    overflow: elide;
+                                    color: Palette.foreground.with-alpha(0.7);
+                                }
+                            }
+                            Text {
+                                text: t.duration;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                color: t.key == root.current-key ? Palette.accent-background : Palette.foreground.with-alpha(0.7);
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconBtn {
+                                    btn-size: 40px;
+                                    icon-size: 20px;
+                                    icon: @image-url("icons/more_vert.svg");
+                                    clicked => {
+                                        root.confirm-delete = false;
+                                        root.menu-index = i;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                FastScroller {
+                    x: parent.width - self.width;
+                    y: 0px;
+                    height: parent.height;
+                    content-height: list.viewport-height;
+                    view-height: list.visible-height;
+                    items: root.tracks;
+                    viewport-y <=> list.viewport-y;
+                }
+            }
+        }
+
+        // — мини-плеер —
+        if root.has-current : Rectangle {
+            height: 76px + root.bottom-inset;
+            background: Palette.alternate-background;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+
+            TouchArea {
+                clicked => { root.player-open = true; }
+            }
+
+            Rectangle {
+                y: 0px;
+                height: 3px;
+                width: parent.width * (root.track-length > 0 ? Math.clamp(root.play-position / root.track-length, 0, 1) : 0);
+                background: Palette.accent-background;
+            }
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 8px;
+                padding-top: 10px;
+                padding-bottom: 10px + root.bottom-inset;
+                spacing: 12px;
+
+                Cover {
+                    width: 56px;
+                    height: 56px;
+                    art: root.current-cover;
+                    has-art: root.has-cover;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.current-title;
+                        font-size: 16px;
+                        font-weight: 500;
+                        overflow: elide;
+                        color: Palette.foreground;
+                    }
+                    Text {
+                        text: root.current-artist;
+                        font-size: 13px;
+                        overflow: elide;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        btn-size: 44px;
+                        icon: @image-url("icons/previous.svg");
+                        clicked => { root.previous(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        btn-size: 48px;
+                        filled: true;
+                        icon: root.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                        clicked => { root.toggle-play(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        btn-size: 44px;
+                        icon: @image-url("icons/next.svg");
+                        clicked => { root.next(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ───────────────────────── Окно плеера ─────────────────────────
+    // Сверху обложка слева, справа название и ниже автор.
+    // Снизу полоса перемотки и кнопки.
+    if root.player-open && root.has-current : Rectangle {
+        background: Palette.background;
+        TouchArea { }
+
+        VerticalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: root.top-inset;
+            padding-bottom: 12px + root.bottom-inset;
+            spacing: 8px;
+
+            HorizontalLayout {
+                height: 56px;
+                IconBtn {
+                    icon: @image-url("icons/chevron_down.svg");
+                    clicked => { root.player-open = false; }
+                }
+                Text {
+                    text: "Сейчас играет";
+                    font-size: 16px;
+                    color: Palette.foreground;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle { width: 48px; }
+            }
+
+            HorizontalLayout {
+                padding-top: 16px;
+                spacing: 18px;
+                Cover {
+                    width: 132px;
+                    height: 132px;
+                    radius: 20px;
+                    art: root.current-cover;
+                    has-art: root.has-cover;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.current-title;
+                        font-size: 22px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        color: Palette.foreground;
+                    }
+                    Text {
+                        text: root.current-artist;
+                        font-size: 16px;
+                        overflow: elide;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            seek-bar := SeekBar {
+                position: root.play-position;
+                total: root.track-length;
+                seek(s) => { root.seek(s); }
+            }
+            HorizontalLayout {
+                Text {
+                    text: Util.time(seek-bar.shown-position);
+                    font-size: 12px;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: Util.time(root.track-length);
+                    font-size: 12px;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+            }
+
+            HorizontalLayout {
+                alignment: space-between;
+                padding-top: 8px;
+                IconBtn {
+                    icon: @image-url("icons/shuffle.svg");
+                    active: root.shuffle;
+                    clicked => { root.toggle-shuffle(); }
+                }
+                IconBtn {
+                    btn-size: 56px;
+                    icon-size: 32px;
+                    icon: @image-url("icons/previous.svg");
+                    clicked => { root.previous(); }
+                }
+                IconBtn {
+                    btn-size: 72px;
+                    icon-size: 36px;
+                    filled: true;
+                    icon: root.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                    clicked => { root.toggle-play(); }
+                }
+                IconBtn {
+                    btn-size: 56px;
+                    icon-size: 32px;
+                    icon: @image-url("icons/next.svg");
+                    clicked => { root.next(); }
+                }
+                IconBtn {
+                    icon: root.repeat-mode == 2 ? @image-url("icons/repeat_one.svg") : @image-url("icons/repeat.svg");
+                    active: root.repeat-mode != 0;
+                    clicked => { root.cycle-repeat(); }
+                }
+            }
+        }
+    }
+
+    // ───────────────────────── Настройки ─────────────────────────
+    if root.settings-open : Rectangle {
+        background: Palette.background;
+        TouchArea { }
+
+        VerticalLayout {
+            padding-top: root.top-inset;
+            padding-left: 8px;
+            padding-right: 16px;
+
+            HorizontalLayout {
+                height: 56px;
+                spacing: 4px;
+                IconBtn {
+                    icon: @image-url("icons/arrow_back.svg");
+                    clicked => { root.settings-open = false; }
+                }
+                Text {
+                    text: "Настройки";
+                    font-size: 22px;
+                    font-weight: 500;
+                    color: Palette.foreground;
+                    vertical-alignment: center;
+                }
+            }
+
+            SettingRow {
+                title: "Тема";
+                ComboBox {
+                    width: 170px;
+                    model: ["Как в системе", "Светлая", "Тёмная"];
+                    current-index <=> root.theme-mode;
+                    selected => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Скрывать записи из мессенджеров";
+                hint: "Папки Telegram, WhatsApp, Viber, VK и других";
+                Switch {
+                    checked <=> root.hide-messengers;
+                    toggled => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Скрывать записи диктофона";
+                hint: "Диктофон, записи звонков, голосовые заметки";
+                Switch {
+                    checked <=> root.hide-recordings;
+                    toggled => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Не показывать короче";
+                hint: "Убирает короткие звуки и голосовые";
+                ComboBox {
+                    width: 170px;
+                    model: ["Показывать все", "30 секунд", "1 минута", "2 минуты"];
+                    current-index <=> root.min-length;
+                    selected => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Сортировка";
+                ComboBox {
+                    width: 170px;
+                    model: ["По названию", "По исполнителю"];
+                    current-index <=> root.sort-mode;
+                    selected => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Открывать плеер при запуске песни";
+                Switch {
+                    checked <=> root.auto-open-player;
+                    toggled => { root.settings-changed(); }
+                }
+            }
+            SettingRow {
+                title: "Скрытые треки";
+                hint: "" + root.hidden-count + " шт. скрыто вручную (файлы остаются на телефоне)";
+                Button {
+                    text: "Показать все";
+                    enabled: root.hidden-count > 0;
+                    clicked => { root.unhide-all(); }
+                }
+            }
+            SettingRow {
+                title: "Пересканировать музыку";
+                Button {
+                    text: "Обновить";
+                    clicked => {
+                        root.rescan();
+                        root.settings-open = false;
+                    }
+                }
+            }
+
+            Text {
+                text: "Удаление файлов требует доступа ко всем файлам: при первом удалении приложение откроет нужный экран системных настроек.";
+                font-size: 12px;
+                wrap: word-wrap;
+                color: Palette.foreground.with-alpha(0.55);
+                padding: 16px;
+            }
+            Rectangle { vertical-stretch: 1; }
+            Text {
+                text: "Моя музыка 0.2 · Rust + Slint · Material";
+                font-size: 12px;
+                horizontal-alignment: center;
+                color: Palette.foreground.with-alpha(0.45);
+            }
+            Rectangle { height: root.bottom-inset; }
+        }
+    }
+
+    // ───────────────────────── Меню трека: скрыть / удалить ─────────────────────────
+    if root.menu-index >= 0 : Rectangle {
+        Rectangle {
+            background: Colors.black.with-alpha(0.5);
+            TouchArea {
+                clicked => {
+                    root.menu-index = -1;
+                    root.confirm-delete = false;
+                }
+            }
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: 330px + root.bottom-inset;
+            y: parent.height - self.height;
+            background: Palette.alternate-background;
+            border-top-left-radius: 28px;
+            border-top-right-radius: 28px;
+            TouchArea { }
+
+            VerticalLayout {
+                padding: 24px;
+                padding-bottom: 24px + root.bottom-inset;
+                spacing: 10px;
+
+                Text {
+                    text: root.tracks[root.menu-index].title;
+                    font-size: 18px;
+                    font-weight: 600;
+                    overflow: elide;
+                    color: Palette.foreground;
+                }
+                Text {
+                    text: root.tracks[root.menu-index].artist;
+                    font-size: 14px;
+                    overflow: elide;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                Rectangle { height: 6px; }
+
+                if !root.confirm-delete : VerticalLayout {
+                    spacing: 10px;
+                    Button {
+                        text: "Скрыть из плеера";
+                        clicked => {
+                            root.hide-track(root.menu-index);
+                            root.menu-index = -1;
+                        }
+                    }
+                    Button {
+                        text: "Удалить с телефона…";
+                        clicked => { root.confirm-delete = true; }
+                    }
+                    Button {
+                        text: "Отмена";
+                        clicked => { root.menu-index = -1; }
+                    }
+                }
+
+                if root.confirm-delete : VerticalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: "Файл будет удалён с телефона навсегда. Это нельзя отменить.";
+                        wrap: word-wrap;
+                        font-size: 14px;
+                        color: #e5534b;
+                    }
+                    Button {
+                        text: "Да, удалить навсегда";
+                        primary: true;
+                        clicked => {
+                            root.delete-track(root.menu-index);
+                            root.menu-index = -1;
+                            root.confirm-delete = false;
+                        }
+                    }
+                    Button {
+                        text: "Отмена";
+                        clicked => {
+                            root.menu-index = -1;
+                            root.confirm-delete = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ───────────────────────── Сообщение внизу ─────────────────────────
+    if root.message != "" : Rectangle {
+        x: 16px;
+        width: parent.width - 32px;
+        height: 64px;
+        y: parent.height - self.height - 96px - root.bottom-inset;
+        border-radius: 14px;
+        background: Palette.foreground;
+        Text {
+            x: 16px;
+            width: parent.width - 32px;
+            height: parent.height;
+            text: root.message;
+            wrap: word-wrap;
+            font-size: 14px;
+            vertical-alignment: center;
+            color: Palette.background;
+        }
+    }
+}
